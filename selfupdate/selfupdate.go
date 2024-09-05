@@ -92,6 +92,19 @@ type Updater struct {
 	}
 }
 
+type ResultType uint
+
+const (
+	NoUpdateAvailable = iota
+	UpdateInstalled
+)
+
+type UpdateResult struct {
+	Result         ResultType
+	CurrentVersion string
+	NewVersion     string
+}
+
 func (u *Updater) getExecRelativeDir(dir string) string {
 	filename, _ := osext.Executable()
 	path := filepath.Join(filepath.Dir(filename), dir)
@@ -99,15 +112,15 @@ func (u *Updater) getExecRelativeDir(dir string) string {
 }
 
 // BackgroundRun starts the update check and apply cycle.
-func (u *Updater) BackgroundRun() error {
+func (u *Updater) BackgroundRun() (*UpdateResult, error) {
 	if err := os.MkdirAll(u.getExecRelativeDir(u.Dir), 0777); err != nil {
 		// fail
-		return err
+		return nil, err
 	}
 	if u.WantUpdate() {
 		if err := up.CanUpdate(); err != nil {
 			// fail
-			return err
+			return nil, err
 		}
 
 		u.SetUpdateTime()
@@ -118,11 +131,14 @@ func (u *Updater) BackgroundRun() error {
 		//return
 		//}
 		// TODO(bgentry): logger isn't on Windows. Replace w/ proper error reports.
-		if err := u.Update(); err != nil {
-			return err
-		}
+		return u.Update()
 	}
-	return nil
+
+	return &UpdateResult{
+		Result:         NoUpdateAvailable,
+		CurrentVersion: u.CurrentVersion,
+		NewVersion:     u.CurrentVersion,
+	}, nil
 }
 
 // WantUpdate returns boolean designating if an update is desired
@@ -182,23 +198,27 @@ func (u *Updater) UpdateAvailable() (string, error) {
 }
 
 // Update initiates the self update process
-func (u *Updater) Update() error {
+func (u *Updater) Update() (*UpdateResult, error) {
 	path, err := osext.Executable()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	old, err := os.Open(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer old.Close()
 
 	err = u.fetchInfo()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if u.Info.Version == u.CurrentVersion {
-		return nil
+		return &UpdateResult{
+			Result:         NoUpdateAvailable,
+			CurrentVersion: u.CurrentVersion,
+			NewVersion:     u.Info.Version,
+		}, nil
 	}
 	bin, err := u.fetchAndVerifyPatch(old)
 	if err != nil {
@@ -217,7 +237,7 @@ func (u *Updater) Update() error {
 			} else {
 				log.Println("update: fetching full binary,", err)
 			}
-			return err
+			return nil, err
 		}
 	}
 
@@ -227,12 +247,16 @@ func (u *Updater) Update() error {
 
 	err, errRecover := up.FromStream(bytes.NewBuffer(bin))
 	if errRecover != nil {
-		return fmt.Errorf("update and recovery errors: %q %q", err, errRecover)
+		return nil, fmt.Errorf("update and recovery errors: %q %q", err, errRecover)
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return nil
+	return &UpdateResult{
+		Result:         UpdateInstalled,
+		CurrentVersion: u.CurrentVersion,
+		NewVersion:     u.Info.Version,
+	}, nil
 }
 
 func (u *Updater) fetchInfo() error {
