@@ -67,6 +67,19 @@ type Updater struct {
 	OnSuccessfulUpdate func() // Optional function to run after an update has successfully taken place
 }
 
+type ResultType uint
+
+const (
+	NoUpdateAvailable = iota
+	UpdateInstalled
+)
+
+type UpdateResult struct {
+	Result         ResultType
+	CurrentVersion string
+	NewVersion     string
+}
+
 func (u *Updater) getExecRelativeDir(dir string) string {
 	filename, _ := os.Executable()
 	path := filepath.Join(filepath.Dir(filename), dir)
@@ -96,26 +109,31 @@ func canUpdate() (err error) {
 }
 
 // BackgroundRun starts the update check and apply cycle.
-func (u *Updater) BackgroundRun() error {
+func (u *Updater) BackgroundRun() (*UpdateResult, error) {
 	if err := os.MkdirAll(u.getExecRelativeDir(u.Dir), 0755); err != nil {
 		// fail
-		return err
+		return nil, err
 	}
 	// check to see if we want to check for updates based on version
 	// and last update time
 	if u.WantUpdate() {
 		if err := canUpdate(); err != nil {
 			// fail
-			return err
+			return nil, err
 		}
 
 		u.SetUpdateTime()
 
-		if err := u.Update(); err != nil {
-			return err
+		if result, err := u.Update(); err != nil {
+			return result, err
 		}
 	}
-	return nil
+
+	return &UpdateResult{
+		Result:         NoUpdateAvailable,
+		CurrentVersion: u.CurrentVersion,
+		NewVersion:     u.CurrentVersion,
+	}, nil
 }
 
 // WantUpdate returns boolean designating if an update is desired. If the app's version
@@ -177,10 +195,10 @@ func (u *Updater) UpdateAvailable() (string, error) {
 }
 
 // Update initiates the self update process
-func (u *Updater) Update() error {
+func (u *Updater) Update() (*UpdateResult, error) {
 	path, err := os.Executable()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if resolvedPath, err := filepath.EvalSymlinks(path); err == nil {
@@ -190,17 +208,21 @@ func (u *Updater) Update() error {
 	// go fetch latest updates manifest
 	err = u.fetchInfo()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// we are on the latest version, nothing to do
 	if u.Info.Version == u.CurrentVersion {
-		return nil
+		return &UpdateResult{
+			Result:         NoUpdateAvailable,
+			CurrentVersion: u.CurrentVersion,
+			NewVersion:     u.Info.Version,
+		}, nil
 	}
 
 	old, err := os.Open(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer old.Close()
 
@@ -222,7 +244,7 @@ func (u *Updater) Update() error {
 			} else {
 				log.Println("update: fetching full binary,", err)
 			}
-			return err
+			return nil, err
 		}
 	}
 
@@ -232,10 +254,10 @@ func (u *Updater) Update() error {
 
 	err, errRecover := fromStream(bytes.NewBuffer(bin))
 	if errRecover != nil {
-		return fmt.Errorf("update and recovery errors: %q %q", err, errRecover)
+		return nil, fmt.Errorf("update and recovery errors: %q %q", err, errRecover)
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// update was successful, run func if set
@@ -243,7 +265,11 @@ func (u *Updater) Update() error {
 		u.OnSuccessfulUpdate()
 	}
 
-	return nil
+	return &UpdateResult{
+		Result:         UpdateInstalled,
+		CurrentVersion: u.CurrentVersion,
+		NewVersion:     u.Info.Version,
+	}, nil
 }
 
 func fromStream(updateWith io.Reader) (err error, errRecover error) {
